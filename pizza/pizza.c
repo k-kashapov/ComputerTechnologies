@@ -16,7 +16,11 @@
         return val;                                                            \
     }
 
-#define PIZZA_LEN 5 // 5 letters in "PIZZA"
+// 5 letters in "PIZZA"
+#define PIZZA_LEN 5
+
+// Number of different ingridients: ['P', 'I', 'Z', 'A']
+#define INGR_NUM 4
 
 // Size of shared memory
 #define PIZZA_SHM_SIZE 50
@@ -39,11 +43,32 @@
 #error Not enough space for all ingridients and conveyor.
 #endif
 
+// Number of semaphores =
+// (num of ingridients) + (number of conveyor parts) + 1 (is pizza ready)
+#define SEMAPHORES_NUM (INGR_NUM + CONVEYOR_NUM + 1)
+
+union semun {
+    int val;               /* Value for SETVAL */
+    struct semid_ds *buf;  /* Buffer for IPC_STAT, IPC_SET */
+    unsigned short *array; /* Array for GETALL, SETALL */
+    struct seminfo *__buf; /* Buffer for IPC_INFO
+                              (Linux-specific) */
+};
+
+/*
+ * Recipient waits for pizza is ready semaphore to be set
+ * when set, it checks if pizza is OK and grabs it from the belt.
+ * It then returns 1.
+ */
 int Recipient(void) {
     printf("Recipient reporting!\n");
     return 1;
 }
 
+/*
+ * Master checks semaphores for ingridients. If any not set,
+ * refills the ingridients and sets the semaphore value to 1.
+ */
 int MasterChief(char *shm) {
     printf("MasterChief reporting!\n");
 
@@ -52,10 +77,19 @@ int MasterChief(char *shm) {
     return 0;
 }
 
+/*
+ * Slave checks if the semaphore for the respective ingridient is set.
+ * If his semaphore is set, takes one ingridient and adds it to the
+ * first available position in a conveyor belt.
+ * If the Slave has used all available ingrients, it lowers the semaphore
+ * and waits for the Chief to put them back.
+ */
 int SlaveChief(int slave_idx, char *shm) {
     printf("Slave #%d reporting!\n", slave_idx);
 
-    printf("SLAVE #%d: (%d)\n", slave_idx, shm[slave_idx]);
+    while (1) {
+        printf("SLAVE #%d: (%d)\n", slave_idx, shm[slave_idx]);
+    }
 
     return 0;
 }
@@ -88,8 +122,16 @@ int main(int argc, const char **argv) {
     }
 
     // Create semaphores for each ingridient
-    int sem_id = semget(IPC_PRIVATE, 4, IPC_CREAT | 0600);
+    int sem_id = semget(IPC_PRIVATE, SEMAPHORES_NUM, IPC_CREAT | 0600);
     CHECK_RET(sem_id);
+
+    union semun sem_arg;
+    unsigned short sem_vals[SEMAPHORES_NUM] = {0};
+    sem_arg.array = sem_vals;
+
+    // Initialize semaphores with zeroes
+    int set_ret = semctl(sem_id, SEMAPHORES_NUM, SETALL, sem_arg);
+    CHECK_RET(set_ret);
 
     // Create Master Chief
     int pid = fork();
@@ -109,11 +151,16 @@ int main(int argc, const char **argv) {
         pizza_num += Recipient();
     }
 
+    printf("Waiting for all children to finish...\n");
+
+    while (wait(NULL) > 0)
+        ;
+
     shmdt(pizza_addr);
     shmctl(shm_id, IPC_RMID, NULL);
-    semctl(sem_id, 4, IPC_RMID, NULL);
+    semctl(sem_id, INGR_NUM, IPC_RMID, NULL);
 
-    printf("All done!");
+    printf("All done!\n");
 
     return 0;
 }
