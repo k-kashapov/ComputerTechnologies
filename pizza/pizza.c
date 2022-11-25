@@ -104,15 +104,38 @@ int semopArr(int semid, short unsigned int *semn, short int *op, int semn_len) {
 int Recipient(char *shm, int semid) {
     printf("Recipient reporting!\n");
 
-    for (size_t i = SEMAPHORES_NUM - CONVEYOR_NUM; i < SEMAPHORES_NUM; i++) {
-        if (semZero(semid, i)) {
-            printf("Should check convey #%ld\n", SEMAPHORES_NUM - i);
-            break;
-        }
-    }
+    while (1) {
+        printf("REC: Loop start\n");
 
-    shm[SHIFT_END_BYTE] = 1;
-    printf("\nShift ended!\n");
+        for (size_t i = 0; i < CONVEYOR_NUM; i++) {
+            int semnum = SEMAPHORES_NUM - CONVEYOR_NUM + i;
+            if (semZero(semid, semnum)) {
+                printf("Should check convey #%d\n", semnum);
+
+                printf("REC: |%s| == |%s|\n",
+                       shm + CONVEYOR_START + i * PIZZA_LEN, "PIZZA");
+
+                if (!memcmp(shm + CONVEYOR_START + i * PIZZA_LEN, "PIZZA", 5)) {
+                    printf("REC: PIZZA ready\n");
+
+                    memset(shm + CONVEYOR_START + i * PIZZA_LEN, 0, 5);
+                    semopSingle(semid, semnum, INGR_NUM);
+
+                    printf("REC: Sem %d set to 4!\n", semnum);
+                    fflush(stdout);
+
+                    return 1;
+                }
+
+                printf("Incorrect pizza!!\n");
+                semopSingle(semid, semnum, INGR_NUM);
+
+                return 100;
+            }
+        }
+
+        usleep(100000);
+    }
 
     return 1;
 }
@@ -134,7 +157,7 @@ int MasterChief(char *shm, int semid) {
 
         for (size_t i = 0; i < INGR_NUM; i++) {
             if (!semZero(semid, i)) {
-                printf("MASTER: No help at #%ld", i);
+                printf("MASTER: No help at #%ld\n", i);
 
                 continue;
             }
@@ -149,7 +172,7 @@ int MasterChief(char *shm, int semid) {
         }
 
         printf("MASTER: Loop end\n");
-        sleep(3);
+        usleep(10000);
     }
 
     printf("MASTER: Shift end\n");
@@ -183,12 +206,13 @@ int SlaveChief(int slave_idx, char *shm, int semid) {
         printf("SLAVE #%d: Loop start\n", slave_idx);
         fflush(stdout);
 
-        if (semZero(semid, slave_idx)) {
-            if (shm[SHIFT_END_BYTE]) {
-                break;
-            }
+        if (shm[SHIFT_END_BYTE]) {
+            break;
+        }
 
-            sleep(2);
+        if (semZero(semid, slave_idx) ||
+            semZero(semid, SEMAPHORES_NUM - CONVEYOR_NUM + slave_idx)) {
+            usleep(20000);
             continue;
         }
 
@@ -204,7 +228,10 @@ int SlaveChief(int slave_idx, char *shm, int semid) {
 
         printf("SLAVE #%d: took ingridients\n", slave_idx);
 
-        for (int conv_num = 0; conv_num < CONVEYOR_NUM; conv_num++) {
+        for (int conv_num = 0; (conv_num < CONVEYOR_NUM) && (taken_count > 0);
+             conv_num++) {
+            int patched = 0;
+
             for (int ingr_put = 0; ingr_put < ingr_take[slave_idx];
                  ingr_put++) {
                 int ingr_addr =
@@ -212,18 +239,29 @@ int SlaveChief(int slave_idx, char *shm, int semid) {
 
                 if (shm[ingr_addr] == 0) {
                     shm[ingr_addr] = Ingridients[slave_idx];
+                    patched = 1;
                     printf("SLAVE #%d: put ingridient to shm[%d]\n", slave_idx,
                            ingr_addr);
                     taken_count--;
                 }
 
                 if (taken_count <= 0) {
-                    goto done;
+                    break;
                 }
             }
+
+            if (patched) {
+                printf("SLAVE #%d: lower semaphore %ld\n", slave_idx,
+                       SEMAPHORES_NUM - CONVEYOR_NUM + conv_num);
+
+                fflush(stdout);
+                semopSingle(semid, SEMAPHORES_NUM - CONVEYOR_NUM + conv_num,
+                            -1);
+            }
         }
-    done:
+
         printf("SLAVE #%d: loop end\n", slave_idx);
+        usleep(10000);
     }
 
     printf("SLAVE #%d: Shift end\n", slave_idx);
@@ -266,16 +304,16 @@ int main(int argc, const char **argv) {
     union semun sem_arg;
     unsigned short sem_vals[SEMAPHORES_NUM] = {0};
 
-    // All conveyors are blocked for recipient
+    // All conveyors are not ready (need INGR_NUM actions to be ready)
     for (size_t pizza_idx = SEMAPHORES_NUM - CONVEYOR_NUM;
          pizza_idx < SEMAPHORES_NUM; pizza_idx++) {
-        printf ("Sem #%ld = 1\n", pizza_idx);
-        sem_vals[pizza_idx] = 1;
+        printf("Sem #%ld = %ld\n", pizza_idx, INGR_NUM);
+        sem_vals[pizza_idx] = INGR_NUM;
     }
 
     sem_arg.array = sem_vals;
 
-    // Initialize semaphores with zeroes
+    // Initialize semaphores
     int set_ret = semctl(semid, SEMAPHORES_NUM, SETALL, sem_arg);
     CHECK_RET(set_ret);
 
@@ -295,12 +333,17 @@ int main(int argc, const char **argv) {
         if (!pid) {
             return SlaveChief(i, pizza_addr, semid);
         }
+
         printf("Slave #%d pid = %d\n", i, pid);
     }
 
-    for (int pizza_num = 0; pizza_num < pizza_req;) {
+    int pizza_num;
+
+    for (pizza_num = 0; pizza_num < pizza_req;) {
         pizza_num += Recipient(pizza_addr, semid);
     }
+
+    pizza_addr[SHIFT_END_BYTE] = 1;
 
     printf("Waiting for all children to finish...\n");
 
@@ -311,6 +354,12 @@ int main(int argc, const char **argv) {
     shmdt(pizza_addr);
     shmctl(shmid, IPC_RMID, NULL);
     semctl(semid, SEMAPHORES_NUM, IPC_RMID, NULL);
+
+    if (pizza_num != pizza_req) {
+        printf("ERROR: pizza_num (%d) != pizza_req (%d)\n", pizza_num,
+               pizza_req);
+        return -1;
+    }
 
     printf("All done!\n");
 
