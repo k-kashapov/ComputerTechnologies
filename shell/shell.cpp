@@ -9,6 +9,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <signal.h>
 
 #ifdef D
 #define DBG(expr)                                                              \
@@ -21,7 +22,7 @@
 #define WRIT_PIPE_IDX 1
 #define READ_PIPE_IDX 0
 
-char *GetEffIDName(uid_t id) {
+static char *GetEffIDName(uid_t id) {
     struct passwd *id_pwd;
 
     id_pwd = getpwuid(id);
@@ -32,7 +33,7 @@ char *GetEffIDName(uid_t id) {
     }
 }
 
-int ExecToken(char *tok, int pipe0, int pipe1) {
+static int ExecToken(char *tok, int pipe0, int pipe1) {
     DBG(printf("PARENT: Executing %s with pipe %d -> %d\n", tok, pipe0, pipe1));
 
     pid_t pid = fork();
@@ -87,7 +88,7 @@ int ExecToken(char *tok, int pipe0, int pipe1) {
     return -1;
 }
 
-int ParseLine(char *cmd) {
+static int ParseLine(char *cmd) {
     char *cmds[2];
 
     cmds[0] = strtok(cmd, "|");
@@ -150,6 +151,12 @@ int ParseLine(char *cmd) {
     return 0;
 }
 
+static void ctrlC(int signum)
+{
+    printf("\b\bZaoshang hao zhongguó\n");
+    exit(130);
+}
+
 int main(int argc, char *const *argv) {
     char command[4096] = {};
     int command_len = 0;
@@ -159,6 +166,8 @@ int main(int argc, char *const *argv) {
         printf("Unknown username!\n");
         return 0;
     }
+
+    signal(SIGINT, ctrlC);
 
     while (1) {
         printf("%s: $ ", name);
