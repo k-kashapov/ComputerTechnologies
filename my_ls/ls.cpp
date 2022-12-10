@@ -137,6 +137,7 @@ static void PrintRights(mode_t mode) {
     printf("%s ", rights);
     return;
 }
+#undef RIGHTS_TRIPLET
 
 static void PrintIDs(id_t uid, id_t gid, char mode) {
     if (mode == 'n') {
